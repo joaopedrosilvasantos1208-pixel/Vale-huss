@@ -4,20 +4,18 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
-local VirtualUser = game:GetService("VirtualUser")
 
 local plr = Players.LocalPlayer
 
 local State = {
-    AutoDodge = false, FastDodge = false, DodgeDistance = 30, ReactionSpeed = 0.08,
-    DodgeDir = 2, DodgeStrength = 35,
-    AutoStop = false, AutoVault = false, AutoSlide = false,
+    AutoDodge = false, FastDodge = false, DodgeDistance = 20, ReactionSpeed = 0.15,
+    DodgeDir = 2, DodgeStrength = 28,
     AutoEscape = false, EscapeRange = 40,
     Sprint = false, SprintValue = 22,
     ShowChaser = false, ShowRunners = false, ShowDistances = false,
     AntiAFK = false, NoClip = false, PerfMode = false, TrainingMode = false,
     EffectsOn = true, MovementIndicator = true,
-    AutoJump = false, AutoSprint = false,
+    AutoJump = false,
 }
 
 local gui = Instance.new("ScreenGui")
@@ -443,9 +441,11 @@ local function makeSection(page, text, order)
 end
 
 -- ==================== DETECÇÃO DE AMEAÇA ====================
--- Não depende de tool/nome. Detecta qualquer jogador próximo que NÃO seja você
--- e que esteja se movendo na sua direção (aproximando). Funciona em qualquer jogo.
-local function getThreats(hrp)
+-- Só considera ameaça quem está:
+--  1. Dentro da DodgeDistance
+--  2. VINDO na sua direção (dot < -0.3, ou seja, está se aproximando)
+--  3. Se movendo (velocidade > 2)
+local function getRealThreats(hrp)
     local threats = {}
     local myPos = hrp.Position
     for _, p in ipairs(Players:GetPlayers()) do
@@ -458,31 +458,26 @@ local function getThreats(hrp)
                     local delta = cHrp.Position - myPos
                     local dist = delta.Magnitude
                     if dist <= State.DodgeDistance then
-                        -- Velocidade do outro player (se está vindo na sua direção)
                         local otherVel = cHrp.AssemblyLinearVelocity
-                        local approaching = false
-                        if otherVel.Magnitude > 1 then
+                        local speed = otherVel.Magnitude
+                        if speed > 2 then
                             local dirToMe = delta.Unit
                             local velDir = otherVel.Unit
-                            if velDir:Dot(dirToMe) < -0.2 then
-                                approaching = true
+                            -- dot < -0.3 = está vindo pra mim
+                            if velDir:Dot(dirToMe) < -0.3 then
+                                table.insert(threats, {
+                                    hrp = cHrp,
+                                    dist = dist,
+                                    dir = delta.Unit,
+                                })
                             end
                         end
-                        table.insert(threats, {
-                            hrp = cHrp,
-                            dist = dist,
-                            dir = delta.Unit,
-                            approaching = approaching,
-                        })
                     end
                 end
             end
         end
     end
-    table.sort(threats, function(a, b)
-        if a.approaching ~= b.approaching then return a.approaching end
-        return a.dist < b.dist
-    end)
+    table.sort(threats, function(a, b) return a.dist < b.dist end)
     return threats
 end
 
@@ -507,9 +502,9 @@ local tgFastDodge = makeToggle(pages.Runner, "Fast Dodge", false, function(v)
         tgAutoDodge.set(true); State.AutoDodge = true
     end
 end, 3)
-makeSlider(pages.Runner, "Dodge Distância", 10, 60, 30, function(v) State.DodgeDistance = v end, 4)
-makeSlider(pages.Runner, "Reação (menor=mais rápido)", 0.02, 0.4, 0.08, function(v) State.ReactionSpeed = v end, 5)
-makeSlider(pages.Runner, "Força do Dodge", 15, 60, 35, function(v) State.DodgeStrength = v end, 6)
+makeSlider(pages.Runner, "Dodge Distância", 8, 40, 20, function(v) State.DodgeDistance = v end, 4)
+makeSlider(pages.Runner, "Reação (menor=mais rápido)", 0.05, 0.4, 0.15, function(v) State.ReactionSpeed = v end, 5)
+makeSlider(pages.Runner, "Força do Dodge", 15, 60, 28, function(v) State.DodgeStrength = v end, 6)
 makeSlider(pages.Runner, "Direção (0=Esq 1=Dir 2=Auto)", 0, 2, 2, function(v) State.DodgeDir = math.floor(v + 0.5) end, 7)
 
 makeSection(pages.Runner, "MOVIMENTO", 8)
@@ -532,7 +527,7 @@ makeToggle(pages.Runner, "Mov Indicator", true, function(v) State.MovementIndica
 makeButton(pages.Runner, "↺ Reset Runner", function()
     State.AutoDodge = false; State.FastDodge = false; State.AutoJump = false
     State.Sprint = false; State.AutoEscape = false
-    State.DodgeDistance = 30; State.ReactionSpeed = 0.08; State.DodgeStrength = 35; State.DodgeDir = 2
+    State.DodgeDistance = 20; State.ReactionSpeed = 0.15; State.DodgeStrength = 28; State.DodgeDir = 2
     local _, _, hum = getCharacter()
     if hum then hum.WalkSpeed = 16 end
     tgAutoDodge.set(false); tgFastDodge.set(false)
@@ -586,23 +581,17 @@ end
 
 local function refreshVisual()
     clearVisual()
-    local char = plr.Character
-    if not char then return end
-    local myHrp = char:FindFirstChild("HumanoidRootPart")
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= plr then
             local cChar = p.Character
-            if cChar then
-                local cHrp = cChar:FindFirstChild("HumanoidRootPart")
-                if cHrp then
-                    if State.ShowChaser then
-                        addHighlight(cChar, DANGER)
-                        if State.ShowDistances then addDistanceMarker(cChar, DANGER) end
-                    end
-                    if State.ShowRunners and not State.ShowChaser then
-                        addHighlight(cChar, NEON)
-                        if State.ShowDistances then addDistanceMarker(cChar, NEON) end
-                    end
+            if cChar and cChar:FindFirstChild("HumanoidRootPart") then
+                if State.ShowChaser then
+                    addHighlight(cChar, DANGER)
+                    if State.ShowDistances then addDistanceMarker(cChar, DANGER) end
+                end
+                if State.ShowRunners and not State.ShowChaser then
+                    addHighlight(cChar, NEON)
+                    if State.ShowDistances then addDistanceMarker(cChar, NEON) end
                 end
             end
         end
@@ -731,14 +720,16 @@ btnClose.MouseButton1Click:Connect(function()
     gui:Destroy()
 end)
 
--- ==================== MOVEMENT / AUTO DODGE ====================
+-- ==================== MOVIMENTO / AUTO DODGE (CORRIGIDO) ====================
 local lastDodge = 0
-local moveIndicator = nil
+local dodgeActive = false
+local dodgeEndTime = 0
+local savedVelocity = nil
 
 local function attachMoveIndicator(char)
-    if moveIndicator then moveIndicator:Destroy() end
     local head = char:FindFirstChild("Head")
     if not head then return end
+    if moveIndicator then moveIndicator:Destroy() end
     local bb = Instance.new("BillboardGui")
     bb.Size = UDim2.fromOffset(100, 18)
     bb.StudsOffset = Vector3.new(0, 3, 0)
@@ -756,13 +747,7 @@ local function attachMoveIndicator(char)
     moveIndicator = bb
 end
 
-local function isSafeDirection(hrp, dir)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { plr.Character }
-    local result = Workspace:Raycast(hrp.Position, dir * 6, params)
-    return result == nil
-end
+local moveIndicator = nil
 
 RunService.Heartbeat:Connect(function()
     local char, hrp, hum = getCharacter()
@@ -793,30 +778,36 @@ RunService.Heartbeat:Connect(function()
         moveIndicator:Destroy(); moveIndicator = nil
     end
 
-    local threats = getThreats(hrp)
-    local closestThreat = threats[1]
-
-    -- Auto Jump
-    if State.AutoJump and hum then
+    -- Auto Jump (obstáculo à frente)
+    if State.AutoJump and hum and hum.MoveDirection.Magnitude > 0.1 then
         local rayParams = RaycastParams.new()
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
         rayParams.FilterDescendantsInstances = { char }
-        local moveDir = hum.MoveDirection
-        if moveDir.Magnitude > 0.1 then
-            local result = Workspace:Raycast(hrp.Position, moveDir * 3 + Vector3.new(0, -2, 0), rayParams)
-            if result and result.Distance < 3 then
-                hum.Jump = true
-            end
+        local result = Workspace:Raycast(hrp.Position, hum.MoveDirection * 3 + Vector3.new(0, -2, 0), rayParams)
+        if result and result.Distance < 3 then
+            hum.Jump = true
         end
     end
 
-    -- AUTO DODGE - reage a QUALQUER jogador próximo, prioriza quem está vindo
-    if State.AutoDodge and closestThreat then
+    -- ============ AUTO DODGE CORRIGIDO ============
+    -- Só dispara se houver ameaça REAL (vindo na sua direção).
+    -- Usa BodyVelocity temporário que é destruído após 0.15s,
+    -- então não trava o movimento normal (W/A/S/D continua funcionando).
+    if State.AutoDodge then
         local now = tick()
-        if now - lastDodge >= State.ReactionSpeed then
-            lastDodge = now
+        local threats = getRealThreats(hrp)
+        local closestThreat = threats[1]
 
-            local dir = -closestThreat.dir  -- oposto ao inimigo
+        -- Se dash ainda está rolando, espera
+        if dodgeActive and now < dodgeEndTime then
+            -- nada
+        elseif closestThreat and (now - lastDodge >= State.ReactionSpeed) then
+            -- Dispara dash
+            lastDodge = now
+            dodgeActive = true
+            dodgeEndTime = now + 0.15
+
+            local dir = -closestThreat.dir
             dir = Vector3.new(dir.X, 0, dir.Z)
             if dir.Magnitude > 0.1 then
                 dir = dir.Unit
@@ -831,53 +822,60 @@ RunService.Heartbeat:Connect(function()
                 end
 
                 for _, d in ipairs(options) do
-                    if isSafeDirection(hrp, d) then
-                        local strength = State.FastDodge and (State.DodgeStrength * 1.5) or State.DodgeStrength
-                        hrp.AssemblyLinearVelocity = Vector3.new(
-                            d.X * strength,
-                            hrp.AssemblyLinearVelocity.Y,
-                            d.Z * strength
-                        )
-                        break
-                    end
+                    -- Cria BodyVelocity temporário (não mexe na velocity base)
+                    local bv = Instance.new("BodyVelocity")
+                    bv.MaxForce = Vector3.new(1e5, 0, 1e5)
+                    bv.Velocity = Vector3.new(d.X * State.DodgeStrength, 0, d.Z * State.DodgeStrength)
+                    bv.Parent = hrp
+                    -- Remove depois de 0.15s
+                    task.delay(0.15, function()
+                        if bv and bv.Parent then bv:Destroy() end
+                    end)
+                    break
                 end
             end
-        end
 
-        if moveIndicator then
-            local l = moveIndicator:FindFirstChildOfClass("TextLabel")
-            if l then
-                l.Text = "MOV: DODGE (" .. math.floor(closestThreat.dist) .. "m)"
-                l.TextColor3 = DANGER
+            if moveIndicator then
+                local l = moveIndicator:FindFirstChildOfClass("TextLabel")
+                if l then
+                    l.Text = "MOV: DODGE (" .. math.floor(closestThreat.dist) .. "m)"
+                    l.TextColor3 = DANGER
+                end
+            end
+        else
+            dodgeActive = false
+            if moveIndicator then
+                local l = moveIndicator:FindFirstChildOfClass("TextLabel")
+                if l then
+                    l.Text = "MOV: ON"
+                    l.TextColor3 = NEON
+                end
             end
         end
     else
         if moveIndicator then
             local l = moveIndicator:FindFirstChildOfClass("TextLabel")
             if l then
-                if State.AutoDodge then
-                    l.Text = "MOV: ON"
-                    l.TextColor3 = NEON
-                else
-                    l.Text = "MOV: OFF"
-                    l.TextColor3 = NEON_DIM
-                end
+                l.Text = "MOV: OFF"
+                l.TextColor3 = NEON_DIM
             end
         end
     end
 
-    -- Auto Escape - corre pro lado oposto da ameaça
-    if State.AutoEscape and hum and closestThreat and closestThreat.dist <= State.EscapeRange then
-        local escapeDir = -closestThreat.dir
-        escapeDir = Vector3.new(escapeDir.X, 0, escapeDir.Z)
-        if escapeDir.Magnitude > 0.1 then
-            escapeDir = escapeDir.Unit
-            -- Move o player na direção contrária ao inimigo
-            hum:Move(escapeDir, false)
+    -- Auto Escape (corre pra longe)
+    if State.AutoEscape and hum then
+        local threats = getRealThreats(hrp)
+        local t = threats[1]
+        if t and t.dist <= State.EscapeRange then
+            local escapeDir = -t.dir
+            escapeDir = Vector3.new(escapeDir.X, 0, escapeDir.Z)
+            if escapeDir.Magnitude > 0.1 then
+                hum:Move(escapeDir.Unit, false)
+            end
         end
     end
 
-    -- Atualiza distâncias nos markers
+    -- Marcadores de distância
     for _, data in pairs(markers) do
         if data.part and data.part.Parent then
             local d = (data.part.Position - hrp.Position).Magnitude
@@ -886,7 +884,6 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- Refresh visual em loop
 task.spawn(function()
     while gui.Parent do
         if State.ShowChaser or State.ShowRunners or State.ShowDistances then
